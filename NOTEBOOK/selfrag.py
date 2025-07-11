@@ -9,36 +9,35 @@ from langchain_community.document_loaders import WebBaseLoader
 from langchain_community.embeddings.spacy_embeddings import SpacyEmbeddings
 from langchain_groq import ChatGroq
 from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
 
-# Initialize Groq LLM (you already did this)
+# Initialize Groq LLM
 llm = ChatGroq(model="llama-3.3-70b-versatile", api_key="")
 
-# Load documents
+# Load and process documents
 loader = WebBaseLoader("https://python.langchain.com/docs/integrations/retrievers/")
 docs = loader.load()
 
-# Split text
+# Split documents into manageable chunks
 text_splitter = CharacterTextSplitter(chunk_size=500, chunk_overlap=100)
 documents = text_splitter.split_documents(docs)
 
-# Embedding with spaCy (you can replace with OpenAIEmbeddings if you prefer)
+# Choose embedding method (spaCy or OpenAI)
 embedder = SpacyEmbeddings(model_name="en_core_web_md")
-# OR you could do:
-# embedder = OpenAIEmbeddings()
+# embedder = OpenAIEmbeddings()  # Optional alternative
 
-# Generate FAISS vectorstore
+# Create FAISS vectorstore
 db = FAISS.from_documents(documents, embedder)
 retriever = db.as_retriever()
 
-# Step 1: Initial Answer
+# Step 1: Generate Initial Answer
 def generate_initial_answer(query):
-    qa = RetrievalQA.from_chain_type(llm=llm, retriever=retriever, chain_type="stuff")
-    return qa.run(query)
+    qa_chain = RetrievalQA.from_chain_type(llm=llm, retriever=retriever, chain_type="stuff")
+    return qa_chain.invoke({"query": query})["result"]
 
-# Step 2: Reflection using Groq
+# Step 2: Reflect on Answer
 def reflect_on_answer(query, answer, retrieved_docs):
     context_snippets = "\n\n".join([doc.page_content for doc in retrieved_docs])
+    
     prompt_template = PromptTemplate(
         input_variables=["query", "answer", "context"],
         template="""
@@ -58,10 +57,10 @@ TASK:
 REVIEW:
 """
     )
-    chain = LLMChain(llm=llm, prompt=prompt_template)
-    return chain.run(query=query, answer=answer, context=context_snippets)
+    chain = prompt_template | llm
+    return chain.invoke({"query": query, "answer": answer, "context": context_snippets})
 
-# Step 3: Regenerate answer using reflection with Groq
+# Step 3: Improve Answer Based on Reflection
 def improve_answer(query, initial_answer, reflection):
     prompt_template = PromptTemplate(
         input_variables=["query", "initial_answer", "reflection"],
@@ -78,13 +77,17 @@ REFLECTION FEEDBACK:
 Please provide an improved answer that addresses the feedback and is well-supported by the context.
 """
     )
-    chain = LLMChain(llm=llm, prompt=prompt_template)
-    return chain.run(query=query, initial_answer=initial_answer, reflection=reflection)
+    chain = prompt_template | llm
+    return chain.invoke({
+        "query": query,
+        "initial_answer": initial_answer,
+        "reflection": reflection
+    })
 
-# Full pipeline
+# Full Pipeline
 def self_reflective_rag(query):
     initial_answer = generate_initial_answer(query)
-    retrieved_docs = retriever.get_relevant_documents(query)
+    retrieved_docs = retriever.invoke(query)
     reflection = reflect_on_answer(query, initial_answer, retrieved_docs)
     final_answer = improve_answer(query, initial_answer, reflection)
     return {
@@ -94,7 +97,10 @@ def self_reflective_rag(query):
     }
 
 # Example usage
-result = self_reflective_rag("What is the mechanism of CRISPR gene editing?")
-print("Initial Answer:\n", result["initial_answer"])
-print("\nReflection:\n", result["reflection"])
-print("\nFinal Answer:\n", result["final_answer"])
+if __name__ == "__main__":
+    query = "What is the mechanism of CRISPR gene editing?"
+    result = self_reflective_rag(query)
+    
+    print("=== Initial Answer ===\n", result["initial_answer"])
+    print("\n=== Reflection ===\n", result["reflection"])
+    print("\n=== Final Answer ===\n", result["final_answer"])
